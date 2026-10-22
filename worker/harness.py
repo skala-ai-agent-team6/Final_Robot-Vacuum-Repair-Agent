@@ -11,7 +11,8 @@ import hashlib
 import inspect
 import math
 from pathlib import Path
-from langgraph.errors import GraphRecursionError
+from langgraph.errors import GraphInterrupt, GraphRecursionError
+from langgraph.types import Command
 from .observability import context, log_event
 from time import monotonic
 
@@ -189,6 +190,9 @@ def observed(fn):
         started = monotonic()
         try:
             return await fn(state, config)
+        except GraphInterrupt:
+            record("node.paused", node=fn.__name__)   # 추가 자료를 기다리는 정상 멈춤이다
+            raise
         except Exception as exc:
             record("node.failed", node=fn.__name__, error_type=type(exc).__name__)
             raise
@@ -197,14 +201,19 @@ def observed(fn):
     return node
 
 
-async def invoke(graph, command, emit, metrics=None):
+def thread_id(command: dict) -> str:
+    """재개할 상태를 가리키는 키. 재개 명령은 앞서 돌려준 checkpoint 값을 그대로 보낸다."""
+    return str(command["payload"].get("checkpoint") or command["taskId"])
+
+
+async def invoke(graph, command, emit, metrics=None, resume=None):
     metadata = {**context(command), "thread_id": str(command["taskId"])}
     with tracing.execution_context(metadata):
-        return await _invoke(graph, command, emit, metrics)
+        return await _invoke(graph, command, emit, metrics, resume)
 
 
 @traceable(name="repair.diagnosis", process_inputs=lambda _: {}, process_outputs=lambda _: {})
-async def _invoke(graph, command, emit, metrics=None):
+async def _invoke(graph, command, emit, metrics=None, resume=None):
     validate_limits()
     round_no = command["payload"]["round"]
     if type(round_no) is not int or not 0 <= round_no <= C.MAX_PHOTO_ROUNDS:
@@ -219,11 +228,15 @@ async def _invoke(graph, command, emit, metrics=None):
         from .prompts import load_bundle
         budget.prompt_bundle = load_bundle()
         async with asyncio.timeout(budget.run_timeout) as deadline:
-            return await graph.ainvoke({"command": command},
+            # 재개는 멈춘 지점부터 이어가되, 새 명령(추가 자료 포함)으로 갈아 끼운다.
+            graph_input = (Command(resume=resume, update={"command": command})
+                           if resume is not None else {"command": command})
+            return await graph.ainvoke(graph_input,
                                       {"recursion_limit": C.RECURSION_LIMIT,
                                        "run_name": "repair.graph",
                                        "metadata": budget.context,
-                                       "configurable": {"emit": emit}})
+                                       "configurable": {"emit": emit,
+                                                        "thread_id": thread_id(command)}})
     except TimeoutError:
         # 전체 deadline과 개별 도구 timeout은 구분한다.
         if deadline is not None and deadline.expired():

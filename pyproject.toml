@@ -16,6 +16,7 @@ dependencies = [
     "starlette>=0.40",
     "uvicorn>=0.30",
     "pillow>=13.0.0",
+    "langgraph-checkpoint-sqlite>=3.1,<4",
 ]
 
 [dependency-groups]

@@ -52,6 +52,8 @@ RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "20"))
 MAX_NODE_EXECUTIONS = int(os.getenv("MAX_NODE_EXECUTIONS", "20"))
 MAX_SAME_INPUT_ATTEMPTS = int(os.getenv("MAX_SAME_INPUT_ATTEMPTS", "3"))
 STATE_PATH = Path(os.getenv("AGENT_STATE_PATH", str(ROOT / ".local/integration.sqlite3")))
+# LangGraph 체크포인트. journal과 같은 파일을 쓰면 잠금이 겹치므로 분리한다.
+CHECKPOINT_PATH = Path(os.getenv("AGENT_CHECKPOINT_PATH", str(ROOT / ".local/checkpoints.sqlite3")))
 KAFKA_MAX_POLL_INTERVAL_MS = max(
     int((RUN_TIMEOUT + 180) * 1000),
     int(os.getenv("KAFKA_MAX_POLL_INTERVAL_MS", "0")))
