@@ -15,7 +15,6 @@ for k, v in dotenv_values(ROOT / ".env").items():
 KAFKA = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 COMMANDS_TOPIC = "diagnosis.commands.v2"  # Spring → 우리
 EVENTS_TOPIC = "diagnosis.events.v2"  # 우리 → Spring
-PROCESSING_STATUS_TOPIC = "diagnosis.processing-status.v2"  # 최종 처리 결과 → Spring 아웃박스 상태
 DLT_TOPIC = "diagnosis.commands.v2.dlt"  # 처리 못 한 명령
 GROUP_ID = os.getenv("GROUP_ID", "langgraph-diagnosis-v2")
 
