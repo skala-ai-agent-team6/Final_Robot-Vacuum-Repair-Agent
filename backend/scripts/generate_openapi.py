@@ -152,10 +152,84 @@ add('/internal/parts/{id}/availability','get','MCP: combined catalog, warehouses
 for route in ['/api/products','/internal/products']:
     paths[route]['get']['parameters']=[query('serial'),query('serialNumber')]
     paths[route]['get']['description']='One of serial or serialNumber is required.'
+
+S['DiagnosisSelection']=obj({'attachmentIds':array(uid)})
+S['QualityResult']=obj({'id':uid,'attachment_id':uid,'previous_result_id':nullable(uid),'attempt':integer(),'status':string(enum=['PENDING','RUNNING','COMPLETED','ERROR']),'verdict':nullable(string(enum=['PASS','WARNING'])),'checker_version':string(),'policy_version':string(),'original_width':nullable(integer()),'original_height':nullable(integer()),'inspection_width':nullable(integer()),'inspection_height':nullable(integer()),'mean_brightness':nullable({'type':'number'}),'dark_ratio':nullable({'type':'number'}),'bright_ratio':nullable({'type':'number'}),'sharpness':nullable({'type':'number'}),'issues':array(string()),'guidance':array(obj({'code':string(),'message':string()})),'created_at':date,'started_at':nullable(date),'completed_at':nullable(date),'duration_ms':nullable(integer()),'failure_code':nullable(string()),'confirmedByCurrentUser':boolean})
+S['PhotoQuality']=obj({'attachmentId':uid,'enabled':boolean,'required':boolean,'useStatus':string(enum=['AVAILABLE','EXCLUDED','REPLACED']),'replacedByAttachmentId':nullable(uid),'status':string(enum=['PENDING','RUNNING','COMPLETED','ERROR','LEGACY_UNCHECKED','NOT_APPLICABLE']),'latest':nullable(ref('QualityResult')),'history':array(ref('QualityResult'))})
+S['Uploaded']['properties']['quality']=ref('PhotoQuality');S['Uploaded']['required'].append('quality')
+S['Accepted']['properties']['taskId']=nullable(uid)
+S['Accepted']['properties']['attachments']=array(ref('Uploaded'))
+S['Accepted']['properties']['requiresDiagnosisRequest']=boolean
+S['Attachment']['properties'].update({'quality_required':boolean,'latest_quality_result_id':nullable(uid),'use_status':string(),'replaced_by_id':nullable(uid)})
+S['Resume']['properties']['excludedAttachmentIds']=array(uid)
+S['PhotoSubmission']['properties']['excludedAttachmentIds']=array(uid)
+for route in ['/api/repairs/{id}/diagnosis','/api/repairs/{id}/diagnoses']:
+    paths[route]['post']['requestBody']={'required':False,'description':'Required when quality is enabled and no existing task: select attachment IDs after quality results.','content':{'application/json':{'schema':ref('DiagnosisSelection')}}}
+paths['/api/repairs/{id}/attachments']['post']['parameters']=[dict(p,required=False) if p['name']=='requestId' else p for p in paths['/api/repairs/{id}/attachments']['post']['parameters']]
+add('/api/attachments/{id}/quality','get','Current quality result, guidance, acknowledgment and history',ref('PhotoQuality'))
+add('/api/attachments/{id}/quality/acknowledgment','post','TECHNICIAN: acknowledge current WARNING result only',ref('PhotoQuality'),obj({'resultId':uid}))
+add('/api/attachments/{id}/quality/retry','post','TECHNICIAN: retry ERROR or changed policy, bounded and idempotent',ref('PhotoQuality'),obj({'resultId':nullable(uid)}))
+add('/api/attachments/{id}/selection','put','TECHNICIAN: exclude or replace a photo for future input revisions',ref('PhotoQuality'),obj({'excluded':boolean,'replacedByAttachmentId':nullable(uid)},['excluded']))
+# Preserve integrated-backend approval and per-photo target fields.
+S['Approval']=obj({'target':string(enum=['DIAGNOSIS','MANUAL_REVIEW']),'action':string(enum=['APPROVE','REJECT','REQUEST_HQ_REVIEW','RETURN_TO_TECHNICIAN']),'comment':nullable(string(maxLength=4000))},['target','action'])
+add('/api/repairs/{id}/approval','post','Confirm diagnosis or request/return HQ review',ref('RepairDetail'),ref('Approval'))
+intakeSchema=paths['/api/repairs']['post']['requestBody']['content']['multipart/form-data']['schema']
+intakeSchema['properties']['targets']=array(string(description='Per-file target: PCB, MECHANICAL/MOTOR, SW, GENERAL'))
+paths['/api/repairs/{id}/attachments']['post']['parameters'].append(query('target',string(),False))
+
 for path, methods in paths.items():
     for method, operation in methods.items():
         if method in ['post','put'] and not path.startswith('/internal/'):
             operation['parameters'].append({'in':'header','name':'X-CSRF-TOKEN','required':True,'schema':string(),'description':'GET /api/auth/csrf; refresh after successful login'})
-doc={'openapi':'3.1.0','info':{'title':'Robot repair backend','version':'2.0.0','description':'JSON requests use camelCase DTO fields; DB-backed responses use explicit snake_case fields. See docs/API.md and INTEGRATION.md.'},'servers':[{'url':'http://localhost:8080'}],'security':[{'SessionCookie':[]}],'paths':paths,'components':{'securitySchemes':{'SessionCookie':{'type':'apiKey','in':'cookie','name':'JSESSIONID'},'ServiceToken':{'type':'http','scheme':'bearer'}},'schemas':S}}
+# Swagger UI grouping and executable examples for every documented operation.
+def sample(schema, depth=0):
+    if depth > 12: return None
+    if '$ref' in schema: return sample(S[schema['$ref'].rsplit('/',1)[-1]],depth+1)
+    if 'example' in schema: return schema['example']
+    if 'allOf' in schema:
+        result={}
+        for item in schema['allOf']: result.update(sample(item,depth+1) or {})
+        return result
+    if 'anyOf' in schema: return sample(next(x for x in schema['anyOf'] if x.get('type')!='null'),depth+1)
+    if 'enum' in schema: return schema['enum'][0]
+    if 'default' in schema: return schema['default']
+    kind=schema.get('type')
+    if kind=='object': return {k:sample(v,depth+1) for k,v in schema.get('properties',{}).items()}
+    if kind=='array': return [sample(schema['items'],depth+1)]
+    if kind=='boolean': return True
+    if kind in ['integer','number']: return schema.get('minimum',1)
+    if schema.get('pattern')==uid['pattern']: return '1'
+    return {'uuid':'00000000-0000-4000-8000-000000000001','date':'2026-10-22','date-time':'2026-10-22T09:00:00+09:00','binary':'','password':'실제 계정 비밀번호 입력'}.get(schema.get('format'),'예시')
+
+S['Intake']['example']={'productId':'1','symptoms':'청소 중 바퀴가 멈춥니다.','errorCodes':['E01'],'firmware':'1.2','userInput':{}}
+S['DiagnosisSelection']['example']={'attachmentIds':['1']}
+for path, methods in paths.items():
+    for verb, operation in methods.items():
+        if path.startswith('/internal/'): tag='내부 서비스'
+        elif '/auth/' in path: tag='인증'
+        elif '/quality' in path or '/selection' in path: tag='사진 품질'
+        elif '/reports/' in path or '/report' in path: tag='수리 리포트'
+        elif '/orders' in path or '/procurement' in path: tag='발주·조달'
+        elif '/dashboard' in path: tag='통계'
+        elif '/parts' in path or '/products' in path: tag='제품·부품'
+        else: tag='접수·진단'
+        operation['tags']=[tag]
+        operation['description']=operation['summary']+'\n\n'+('내부 서비스 Bearer 토큰이 필요합니다.' if path.startswith('/internal/') else '로그인 세션과 기존 센터별 접근 권한을 적용합니다. 쓰기 요청의 CSRF 헤더는 이 Swagger UI에서 자동으로 설정합니다.')
+        for parameter in operation.get('parameters',[]):
+            if parameter['name']!='X-CSRF-TOKEN': parameter['example']=sample(parameter['schema'])
+            else: parameter['description']='Swagger UI가 요청 직전 최신 CSRF 토큰을 자동으로 가져옵니다. 직접 호출할 때는 /api/auth/csrf에서 조회하세요.';parameter['required']=False
+        for media, content in operation.get('requestBody',{}).get('content',{}).items():
+            if media!='multipart/form-data': content['example']=sample(content['schema'])
+        for code, response in operation['responses'].items():
+            for media, content in response.get('content',{}).items():
+                if media=='application/json': content['example']=({'code':'FORBIDDEN_OR_CSRF' if code=='403' else 'API_ERROR','status':int(code)} if int(code)>=400 else sample(content['schema']))
+        if verb=='post' and (path=='/api/repairs' or path.endswith('/attachments')):
+            for code in ['429','503']: operation['responses'][code]={'description':'이미지 검증 실행 풀 포화 또는 검사 실행 오류/시간 초과','content':{'application/json':{'schema':ref('Error'),'example':{'code':'PHOTO_VALIDATION_BUSY' if code=='429' else 'PHOTO_VALIDATION_TIMEOUT','status':int(code)}}}}
+paths['/api/repairs']['post']['summary']='접수와 원본 파일 저장; 품질 검사 활성화 시 명시적 진단 요청 필요'
+paths['/api/repairs']['post']['description']+='\n\n사진 품질 활성화 시 taskId=null이며 자동 진단하지 않습니다. 품질 조회·WARNING 확인 후 /api/repairs/{id}/diagnoses에 attachmentIds를 제출하세요. multipart data는 application/json, files는 원본 파일입니다. targets는 files와 같은 순서입니다.'
+paths['/api/auth/login']['post']['description']='실제 계정으로 폼 로그인합니다. username/password를 입력하세요. CSRF는 자동 조회하며 성공한 세션 쿠키로 이후 API를 호출합니다.'
+paths['/api/auth/csrf']['get']['description']='로그인 전에도 조회할 수 있습니다. 로그인·로그아웃 후 토큰을 갱신해야 합니다. 이 UI는 매 쓰기 요청 전에 갱신합니다.'
+paths['/api/repairs/{id}/events']['get']['description']+='\n\n장시간 연결하는 SSE입니다. Swagger UI의 일반 응답 미리보기보다 EventSource 또는 curl -N을 사용하세요. Last-Event-ID로 재연결합니다.'
+doc={'openapi':'3.1.0','info':{'title':'Robot repair backend','version':'2.0.0','description':'모든 업무·내부 API. 요청 DTO는 camelCase, DB 기반 응답은 snake_case, bigint ID는 문자열입니다. 인증 → POST /api/auth/login에서 로그인한 뒤 호출하세요. CSRF는 UI에서 자동 설정합니다. 내부 API는 Authorize의 ServiceToken에 토큰만 입력하세요. 예시 ID와 값은 실제 데이터로 바꿔야 합니다.'},'servers':[{'url':'/'}],'security':[{'SessionCookie':[]}],'paths':paths,'components':{'securitySchemes':{'SessionCookie':{'type':'apiKey','in':'cookie','name':'JSESSIONID'},'ServiceToken':{'type':'http','scheme':'bearer'}},'schemas':S}}
 Path('docs/openapi.json').write_text(json.dumps(doc,ensure_ascii=False,indent=2)+'\n')
 print(f'Generated OpenAPI: {len(paths)} paths, {sum(map(len,paths.values()))} operations')
