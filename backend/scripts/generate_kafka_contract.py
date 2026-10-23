@@ -12,6 +12,7 @@ part=obj({'partId':U,'quantity':I})
 evidence=obj({'type':T,'attachmentId':U,'annotation':{'type':'object'},'citation':T},['type'])
 attachment=obj({'id':U,'request_id':{'anyOf':[U,{'type':'null'}]},'mime_type':T,'byte_size':I,'sha256':T,'downloadPath':T})
 command=obj({'repair':{'type':'object'},'task':{'type':'object'},'attachments':arr(attachment),'attachmentIds':arr(U),'addedAttachmentIds':arr(U),'requestId':{'anyOf':[U,{'type':'null'}]},'requestKey':{'anyOf':[K,{'type':'null'}]},'round':{'type':'integer','minimum':0,'maximum':3},'checkpoint':{'type':['string','null']}})
+command['properties'].update({'selectedAttachmentIds':arr(U),'excludedAttachmentIds':arr(U),'explicitlyExcludedAttachmentIds':arr(U)})
 payloads={
  'DIAGNOSIS_REQUESTED':command, 'DIAGNOSIS_RESUMED':command,
  'DIAGNOSIS_STARTED':obj({'stage':T}), 'DIAGNOSIS_PROGRESS':obj({'stage':T}),

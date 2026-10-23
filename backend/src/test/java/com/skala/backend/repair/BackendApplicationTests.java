@@ -28,7 +28,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.*;
 
-@SpringBootTest(properties={"app.scheduling.enabled=false","app.mock-ai.enabled=false","app.internal-token=test-service-secret-at-least-32-characters","app.seed-password=TestPassword-Only123!","app.files=${java.io.tmpdir}/repair-test-files"})
+@SpringBootTest(properties={"app.scheduling.enabled=false","app.photo-quality.enabled=false","app.mock-ai.enabled=false","app.internal-token=test-service-secret-at-least-32-characters","app.seed-password=TestPassword-Only123!","app.files=${java.io.tmpdir}/repair-test-files"})
 @ActiveProfiles("dev")
 @AutoConfigureMockMvc
 @Testcontainers
@@ -52,7 +52,7 @@ class BackendApplicationTests {
     }
     @AfterEach void logout() {SecurityContextHolder.clearContext();}
     void login(String user) {SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(user,"unused",List.of()));}
-    MockMultipartFile photo() {return new MockMultipartFile("file","wheel.png","image/png",new byte[]{(byte)137,80,78,71,13,10,26,10,1,2});}
+    MockMultipartFile photo() {return new MockMultipartFile("file","wheel.png","image/png",com.skala.backend.repair.quality.QualityImages.png(1,1));}
     Map<String,Object> create() {return repairs.create(new Inputs.Intake(PRODUCT,"원문 증상",List.of("E01","E02"),"1.2",Map.of("custom","원문","id",123,"nested",Map.of("partId",7))),List.of(photo()));}
     Long repair(Map<String,Object> c) {return (Long)c.get("repairId");}
     Long task(Map<String,Object> c) {return (Long)c.get("taskId");}
@@ -261,6 +261,20 @@ class BackendApplicationTests {
         try {mvc.perform(get("/api/auth/me").with(user("tech2"))).andExpect(status().isUnauthorized());}
         finally {db.update("UPDATE app_user SET active=true WHERE email='tech2'");}
     }
+    @Test void swaggerUiAndPackagedContractArePublicWhileBusinessApisRemainProtected() throws Exception {
+        SecurityContextHolder.clearContext();
+        mvc.perform(get("/swagger-ui.html")).andExpect(status().is3xxRedirection()).andExpect(redirectedUrl("/swagger-ui/index.html"));
+        mvc.perform(get("/swagger-ui/index.html")).andExpect(status().isOk()).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().string(org.hamcrest.Matchers.containsString("swagger-ui-bundle.js")));
+        mvc.perform(get("/swagger-ui/swagger-initializer.js")).andExpect(status().isOk()).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().string(org.hamcrest.Matchers.containsString("requestInterceptor")));
+        mvc.perform(get("/webjars/swagger-ui/5.32.1/swagger-ui.css")).andExpect(status().isOk());
+        mvc.perform(get("/webjars/swagger-ui/5.32.1/swagger-ui-bundle.js")).andExpect(status().isOk());
+        var served=mvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentTypeCompatibleWith("application/json")).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(Json.object(served)).isEqualTo(Json.object(java.nio.file.Files.readString(java.nio.file.Path.of("docs/openapi.json"))));
+        mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/internal/parts")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/login").param("username","tech1").param("password","TestPassword-Only123!")).andExpect(status().isForbidden());
+        mvc.perform(post("/api/auth/login").with(csrf()).param("username","tech1").param("password","TestPassword-Only123!")).andExpect(status().isOk());
+    }
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("requestMappingHandlerMapping") org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping routes;
     @Test void openApiListsEveryApplicationRoute() throws Exception {
         Set<String> expected=new TreeSet<>(List.of("post /api/auth/login","post /api/auth/logout"));
@@ -279,6 +293,16 @@ class BackendApplicationTests {
         var c=create();Long historical=db.insert("INSERT INTO diagnosis_job(case_id,request_key,workflow_version,status,created_at) VALUES (?,?,'history','FAILED',now()-interval '1 day')",repair(c),UUID.randomUUID());
         mvc.perform(get("/api/tasks/"+historical).with(user("tech1"))).andExpect(status().isOk()).andExpect(jsonPath("$.id").value(historical.toString())).andExpect(jsonPath("$.status").value("FAILED"));
         mvc.perform(get("/api/tasks/"+historical).with(user("tech2"))).andExpect(status().isForbidden());
+    }
+
+    @Autowired PhotoQualityRepository photoRepository;@Autowired PhotoQualityService photoQuality;
+    @Test void disablingQualityPreservesAutomaticStartAndExplicitlyLogsBypassForPendingPhotos() {
+        var c=create();Long id=(Long)db.one("SELECT id FROM attachment WHERE case_id=?",repair(c)).get("id");assertThat(c.get("taskId")).isNotNull();
+        var tx=new org.springframework.transaction.support.TransactionTemplate(manager);
+        tx.executeWithoutResult(status->{photoRepository.enqueue(id,null,1);photoQuality.freeze(repair(c),task(c),2,List.of(id),List.of());});
+        assertThat(db.one("SELECT quality_gate FROM diagnosis_input_attachment WHERE job_id=? AND input_revision=2",task(c)).get("quality_gate")).isEqualTo("DISABLED");
+        assertThat(db.one("SELECT status,verdict FROM photo_quality_result WHERE attachment_id=?",id).get("status")).isEqualTo("PENDING");
+        assertThat(db.one("SELECT verdict FROM photo_quality_result WHERE attachment_id=?",id).get("verdict")).isNull();
     }
 
 }
